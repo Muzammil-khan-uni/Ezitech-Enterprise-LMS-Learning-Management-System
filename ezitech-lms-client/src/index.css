@@ -1,0 +1,193 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-display: 'Lexend', system-ui, sans-serif;
+
+  --color-brand-50: #f1f0ff;
+  --color-brand-100: #e5e2ff;
+  --color-brand-200: #cbc4ff;
+  --color-brand-300: #a89aff;
+  --color-brand-400: #8b6dff;
+  --color-brand-500: #7c4dff;
+  --color-brand-600: #6c2ff2;
+  --color-brand-700: #5a20d1;
+  --color-brand-800: #481aa8;
+  --color-brand-900: #3a1885;
+
+  --color-accent-400: #ff9f6e;
+  --color-accent-500: #ff7a45;
+  --color-accent-600: #f2622c;
+
+  --color-ink-50: #f7f7fb;
+  --color-ink-100: #eeedf6;
+  --color-ink-200: #dcdaeb;
+  --color-ink-300: #b8b4d1;
+  --color-ink-400: #746d9d;
+  --color-ink-500: #635d85;
+  --color-ink-600: #4a4468;
+  --color-ink-700: #362f52;
+  --color-ink-800: #241f3a;
+  --color-ink-900: #16132a;
+
+  --color-surface: #ffffff;
+  --color-surface-hover: #fbfaff;
+
+  --shadow-soft: 0 1px 2px rgba(22, 19, 42, 0.04), 0 8px 24px -8px rgba(22, 19, 42, 0.10);
+  --shadow-lift: 0 4px 10px rgba(22, 19, 42, 0.06), 0 20px 40px -12px rgba(108, 47, 242, 0.22);
+  --shadow-glow: 0 0 0 1px rgba(124, 77, 255, 0.12), 0 12px 32px -8px rgba(124, 77, 255, 0.35);
+
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.8s linear infinite;
+  --animate-pulse-ring: pulse-ring 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-up: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-gradient: gradient-pan 8s ease infinite;
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 rgba(124, 77, 255, 0.45); }
+    70% { box-shadow: 0 0 0 10px rgba(124, 77, 255, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(124, 77, 255, 0); }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes gradient-pan {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+}
+
+.dark {
+  --color-ink-50: #0c0a18;
+  --color-ink-100: #161228;
+  --color-ink-200: #221c3a;
+  --color-ink-300: #362e54;
+  --color-ink-400: #8780a4;
+  --color-ink-500: #9992ba;
+  --color-ink-600: #b6b1d3;
+  --color-ink-700: #cdc9e4;
+  --color-ink-800: #e7e4f3;
+  --color-ink-900: #f6f5fb;
+
+  --color-surface: #16132a;
+  --color-surface-hover: #1d1936;
+
+  --color-brand-50: #1c1640;
+  --color-brand-100: #281f52;
+
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.24), 0 8px 24px -8px rgba(0, 0, 0, 0.4);
+  --shadow-lift: 0 4px 14px rgba(0, 0, 0, 0.35), 0 20px 40px -12px rgba(124, 77, 255, 0.28);
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+  }
+  html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+  body {
+    @apply bg-ink-50 text-ink-800 antialiased transition-colors duration-300;
+    background-image:
+      radial-gradient(circle at 12% -10%, rgba(124, 77, 255, 0.10), transparent 42%),
+      radial-gradient(circle at 100% 0%, rgba(255, 122, 69, 0.08), transparent 38%);
+    background-attachment: fixed;
+  }
+  .dark body {
+    background-image:
+      radial-gradient(circle at 12% -10%, rgba(124, 77, 255, 0.16), transparent 42%),
+      radial-gradient(circle at 100% 0%, rgba(255, 122, 69, 0.08), transparent 38%);
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+  html[lang='ur'] {
+    --font-sans: 'Noto Nastaliq Urdu', system-ui, sans-serif;
+    --font-display: 'Noto Nastaliq Urdu', system-ui, sans-serif;
+  }
+  html[lang='ur'] body {
+    line-height: 2;
+  }
+  html[lang='ur'] h1, html[lang='ur'] h2, html[lang='ur'] h3, html[lang='ur'] h4 {
+    line-height: 1.9;
+  }
+  ::selection {
+    background: var(--color-brand-200);
+    color: var(--color-brand-900);
+  }
+  .dark ::selection {
+    background: var(--color-brand-600);
+    color: white;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-200) transparent;
+  }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: var(--color-ink-200); border-radius: 999px; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--color-ink-300); }
+
+  /* Prevent iOS Safari from auto-zooming the viewport when a form field is
+     focused (it zooms whenever a field's computed font-size is under 16px). */
+  @media (max-width: 640px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+  }
+  .dark .glass {
+    background: rgba(15, 13, 30, 0.72);
+  }
+  .text-gradient {
+    background: linear-gradient(90deg, var(--color-brand-600), var(--color-accent-500));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .dark .text-gradient {
+    background: linear-gradient(90deg, var(--color-brand-400), var(--color-accent-400));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .bg-gradient-brand {
+    background: linear-gradient(135deg, var(--color-brand-600), var(--color-brand-500) 45%, var(--color-accent-500));
+  }
+  .bg-gradient-animated {
+    background: linear-gradient(120deg, var(--color-brand-700), var(--color-brand-500), var(--color-accent-500), var(--color-brand-600));
+    background-size: 300% 300%;
+    animation: var(--animate-gradient);
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--color-ink-100) 25%, var(--color-ink-200) 37%, var(--color-ink-100) 63%);
+    background-size: 400px 100%;
+    animation: var(--animate-shimmer);
+  }
+  .focus-ring {
+    outline: none;
+  }
+  .focus-ring:focus-visible {
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-brand-400);
+  }
+}

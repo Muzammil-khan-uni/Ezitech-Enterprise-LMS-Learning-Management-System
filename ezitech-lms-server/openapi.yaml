@@ -1,0 +1,2397 @@
+openapi: 3.0.3
+info:
+  title: Ezitech LMS API
+  version: "1.0"
+  description: |
+    Enterprise Learning Management System API. All routes are mounted
+    under `/api/{version}` (see `servers` below) - the version segment
+    matches `API_VERSION` in the server's environment config (`v1` by
+    default).
+
+    ## Authentication
+    Most endpoints require a Bearer access token obtained from
+    `POST /auth/login` (or `/auth/refresh`). A handful of read-only
+    endpoints - the public course catalog, certificate verification,
+    the subscription plan list, course review listings - accept an
+    OPTIONAL token: an anonymous caller gets a public view, an
+    authenticated one gets a personalized/entitled view of the same
+    resource. Each such path says so explicitly below.
+
+    ## Response envelope
+    Every endpoint responds with the same envelope shape
+    (`ApiSuccess`/`ApiError` below) regardless of route - this API does
+    not return bare arrays or bare objects at the top level anywhere.
+
+    ## What this spec does NOT attempt
+    This was hand-authored against the actual route/controller/
+    validation-schema source rather than generated from code
+    annotations, so it has not been validated by a schema linter or
+    exercised against the live API. Request/response schemas favor
+    accuracy on required fields, enums, and auth/error shapes over
+    exhaustively modeling every optional field on every lesson or
+    assessment subtype - those are documented at the level of "this
+    varies by `lessonType`/`assessmentType`, see the model" rather than
+    fully discriminated per-variant schemas. Treat this as a reliable
+    map of what exists and how to call it, not a contract-testing
+    fixture, until it has been checked against a running server.
+
+  contact:
+    name: Ezitech Engineering
+
+servers:
+  - url: /api/v1
+    description: Same-origin (the default in the docker-compose deployment - see DEPLOYMENT.md)
+  - url: http://localhost:5000/api/v1
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: Registration, login, MFA, password reset, email verification, device sessions
+  - name: Users
+    description: Profile management and admin user administration
+  - name: Courses
+    description: Course catalog, builder (sections/lessons), publishing
+  - name: Categories
+    description: Course category taxonomy
+  - name: Learning Paths
+    description: Curated roadmaps of ordered courses
+  - name: Enrollments
+    description: Enrolling in courses and learning paths
+  - name: Progress
+    description: Per-lesson completion and video position tracking
+  - name: Assessments
+    description: Quizzes, coding assignments, projects; attempts and grading
+  - name: Certificates
+    description: Issuance, download, and public verification
+  - name: Certificate Templates
+    description: Admin-managed certificate appearance templates
+  - name: Discussions
+    description: Course discussion boards, announcements, Q&A
+  - name: Notifications
+    description: In-app notification inbox
+  - name: Analytics
+    description: Student/instructor/admin dashboards
+  - name: Reports
+    description: Exportable CSV/Excel/PDF reports
+  - name: Coupons
+    description: Discount codes
+  - name: Subscriptions
+    description: Subscription plans and active subscriptions
+  - name: Live Classes
+    description: Scheduled WebRTC sessions
+  - name: SCORM
+    description: SCORM 1.2 package upload and runtime data
+  - name: Uploads
+    description: Direct-to-Cloudinary file uploads for course content
+  - name: Attendance
+    description: Live-class attendance records
+  - name: Reviews
+    description: Course ratings and reviews
+
+paths:
+  # ============================== AUTH ==============================
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new account
+      description: Self-registration always creates a `student`; any `role` in the request is ignored. `instructor`, `mentor`, `course_manager` and `admin` accounts are created only by an administrator via `POST /users/invite`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, maxLength: 100 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '201':
+          description: Account created; a verification email is queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSuccess' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in
+      description: |
+        If the account has MFA enabled, omitting both `mfaToken` and
+        `recoveryCode` returns 401 with `mfaRequired: true` in the body
+        so the client knows to prompt for a second factor. `mfaToken`
+        and `recoveryCode` are mutually exclusive.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                mfaToken: { type: string, minLength: 6, maxLength: 6, description: 6-digit TOTP code }
+                recoveryCode: { type: string, description: One-time MFA backup code, alternative to mfaToken }
+      responses:
+        '200':
+          description: Logged in. A refresh token is also set as an httpOnly cookie.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+                          accessToken: { type: string }
+        '401':
+          description: Invalid credentials, MFA required, or a deactivated account.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiError'
+                  - type: object
+                    properties:
+                      mfaRequired: { type: boolean, description: Present and true only when a second factor is needed. }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange the httpOnly refresh cookie for a new access token
+      security: []
+      responses:
+        '200':
+          description: New access token issued; refresh token rotated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSuccess' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: The request came from an origin other than the configured client origin. }
+        '409': { description: This refresh token was rotated moments ago by another request (for example another tab). The cookie already holds the new token - retry once. }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out (revokes the current session's refresh token)
+      security: []
+      responses:
+        '200': { description: Logged out. }
+
+  /auth/set-password:
+    post:
+      tags: [Auth]
+      summary: Complete an admin invite by setting a password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '200': { description: Password set; account activated. }
+        '400': { description: Invalid or expired token. }
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password reset link
+      description: Always returns 200 regardless of whether the email is registered, to avoid account enumeration.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        '200': { description: If the email is registered, a reset link was queued. }
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Complete a password reset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '200': { description: Password reset. }
+        '400': { description: Invalid, expired, or already-used token. }
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify an email address
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties: { token: { type: string } }
+      responses:
+        '200': { description: Email verified. }
+        '400': { description: Invalid, expired, or already-used token. }
+
+  /auth/resend-verification:
+    post:
+      tags: [Auth]
+      summary: Resend the verification email for the current account
+      responses:
+        '200': { description: Verification email re-queued. }
+        '400': { description: Already verified. }
+
+  /auth/mfa/setup:
+    post:
+      tags: [Auth]
+      summary: Begin MFA setup (generates a TOTP secret and QR code)
+      description: Does not enable MFA yet - the returned secret must be confirmed via `POST /auth/mfa/verify`.
+      responses:
+        '200':
+          description: Secret and QR code generated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          secret: { type: string }
+                          qrCodeDataUrl: { type: string, description: 'A data: URI PNG the client renders directly.' }
+
+  /auth/mfa/verify:
+    post:
+      tags: [Auth]
+      summary: Confirm MFA setup and enable it
+      description: Returns 10 one-time recovery codes - shown to the caller exactly once, only their hashes are persisted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties: { token: { type: string, minLength: 6, maxLength: 6 } }
+      responses:
+        '200':
+          description: MFA enabled.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          recoveryCodes: { type: array, items: { type: string }, minItems: 10, maxItems: 10 }
+        '400': { description: Invalid TOTP code, or setup was never started. }
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change the current user's password
+      description: Signs the account out of every other device, issues a fresh session for this one (new access token and refresh cookie) and sends a notification email. Wrong current passwords count toward the account lockout.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 8, maxLength: 128 }
+      responses:
+        '200': { description: Password changed. }
+        '400': { description: Current password incorrect, or the new password is unchanged. }
+        '429': { description: Account temporarily locked. }
+
+  /auth/mfa/disable:
+    post:
+      tags: [Auth]
+      summary: Disable MFA (also invalidates all remaining recovery codes)
+      description: Requires the account password and either a current authenticator code or an unused recovery code. Wrong values count toward the account lockout.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, format: password }
+                token: { type: string, pattern: '^[0-9]{6}$' }
+                recoveryCode: { type: string }
+      responses:
+        '200': { description: MFA disabled. }
+        '400': { description: Incorrect password or verification code. }
+        '429': { description: Account temporarily locked. }
+
+  /auth/mfa/recovery-codes:
+    get:
+      tags: [Auth]
+      summary: Get the count of unused recovery codes
+      responses:
+        '200':
+          description: Count of remaining codes (null if MFA isn't enabled).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: object, properties: { remaining: { type: [integer, 'null'] } } } }
+
+  /auth/mfa/recovery-codes/regenerate:
+    post:
+      tags: [Auth]
+      summary: Invalidate all unused recovery codes and issue 10 new ones
+      description: Requires the account password and a current authenticator code.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, token]
+              properties:
+                password: { type: string, format: password }
+                token: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '200':
+          description: New codes generated - shown exactly once.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: object, properties: { recoveryCodes: { type: array, items: { type: string } } } } }
+        '400': { description: MFA is not enabled. }
+
+  /auth/devices:
+    get:
+      tags: [Auth]
+      summary: List active sessions/devices for the current account
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSuccess' }
+
+  /auth/devices/{sessionId}:
+    delete:
+      tags: [Auth]
+      summary: Revoke a session (log out that device)
+      parameters:
+        - $ref: '#/components/parameters/sessionId'
+      responses:
+        '200': { description: Session revoked. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================== USERS ==============================
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get the current user's profile
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: object, properties: { user: { $ref: '#/components/schemas/User' } } } }
+    patch:
+      tags: [Users]
+      summary: Update the current user's profile
+      description: Send only the fields to change. Send null or an empty value to remove phone, bio or a social link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 2, maxLength: 100 }
+                phone: { type: string, nullable: true, description: 7-20 digits, may start with + }
+                bio: { type: string, nullable: true, maxLength: 1000 }
+                skills: { type: array, maxItems: 30, items: { type: string, maxLength: 40 } }
+                education:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: object
+                    required: [school]
+                    properties:
+                      _id: { $ref: '#/components/schemas/ObjectId' }
+                      school: { type: string, maxLength: 120 }
+                      degree: { type: string, maxLength: 120 }
+                      field: { type: string, maxLength: 120 }
+                      startYear: { type: integer, nullable: true }
+                      endYear: { type: integer, nullable: true }
+                      description: { type: string, maxLength: 500 }
+                socialLinks:
+                  type: object
+                  properties:
+                    github: { type: string, nullable: true, description: Must be a github.com URL }
+                    linkedin: { type: string, nullable: true, description: Must be a linkedin.com URL }
+      responses:
+        '200': { description: Updated. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /users/me/avatar:
+    post:
+      tags: [Users]
+      summary: Upload or replace the current user's profile photo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: JPEG, PNG or WebP up to 5 MB }
+      responses:
+        '200': { description: Photo updated. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Users]
+      summary: Remove the current user's profile photo
+      responses:
+        '200': { description: Photo removed. }
+
+  /users/me/email:
+    post:
+      tags: [Users]
+      summary: Change the current user's email address
+      description: Requires the current password. The new address must be verified again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200': { description: Email updated and a verification link sent. }
+        '401': { description: Incorrect password. }
+        '409': { description: Email already in use. }
+
+  /users/me/role-profile:
+    patch:
+      tags: [Users]
+      summary: Update the current user's role-specific profile (bio, expertise, interests, social links)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                bio: { type: string, maxLength: 2000 }
+                expertise: { type: array, items: { type: string } }
+                interests: { type: array, items: { type: string } }
+                currentLevel: { type: string, enum: [beginner, intermediate, advanced] }
+                socialLinks:
+                  type: object
+                  properties:
+                    website: { type: string, format: uri }
+                    linkedin: { type: string, format: uri }
+                    github: { type: string, format: uri }
+      responses:
+        '200': { description: Updated. }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List all users (admin only)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: role
+          schema: { $ref: '#/components/schemas/Role' }
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/invite:
+    post:
+      tags: [Users]
+      summary: Invite a new user (admin only) - the only way to create an admin or course_manager account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, role]
+              properties:
+                name: { type: string, maxLength: 100 }
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '201': { description: Invited - an email with a set-password link was queued. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/mentors:
+    get:
+      tags: [Users]
+      summary: List active mentor accounts (admin, course_manager)
+      description: Used by the mentor picker on the course builder.
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /courses/{courseId}/mentors:
+    get:
+      tags: [Courses]
+      summary: List the mentors assigned to a course
+      description: Visible to the course's own instructor, course managers and admins.
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Courses]
+      summary: Replace the mentors assigned to a course (admin, course_manager)
+      description: Every id must belong to an active mentor account, otherwise 400. Assigned mentors can read the course, take part in its discussion board, join its live classes, see its students and grade its submissions.
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mentorIds]
+              properties:
+                mentorIds:
+                  type: array
+                  maxItems: 50
+                  items: { type: string }
+      responses:
+        '200': { description: The mentors now assigned. }
+        '400': { description: An id is not an active mentor. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/{userId}/unlock:
+    post:
+      tags: [Users]
+      summary: Clear an account lockout caused by repeated failed sign-ins (admin only)
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Account unlocked. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: User not found. }
+
+  /users/{userId}/status:
+    patch:
+      tags: [Users]
+      summary: Activate or deactivate a user (admin only)
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isActive]
+              properties: { isActive: { type: boolean } }
+      responses:
+        '200': { description: Updated. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ============================== COURSES ==============================
+  /courses:
+    get:
+      tags: [Courses]
+      summary: Browse the course catalog
+      description: |
+        Publicly accessible. An anonymous or unprivileged caller is
+        always pinned to `status=published` regardless of the `status`
+        query param - only admin/course_manager (or an instructor
+        browsing their own courses via `instructor=<their id>`) can see
+        drafts/archived courses.
+      security: []
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [draft, published, archived] }
+          description: Ignored (pinned to published) for anonymous/unprivileged callers.
+        - in: query
+          name: category
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - in: query
+          name: instructor
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: language
+          schema: { type: string }
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/Course' } } }
+    post:
+      tags: [Courses]
+      summary: Create a course (instructor/course_manager/admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, category]
+              properties:
+                title: { type: string, maxLength: 200 }
+                description: { type: string }
+                category: { $ref: '#/components/schemas/ObjectId' }
+                price: { type: number, minimum: 0, default: 0 }
+                tags: { type: array, items: { type: string } }
+                prerequisites: { type: array, items: { $ref: '#/components/schemas/ObjectId' } }
+      responses:
+        '201':
+          description: Created (status defaults to `draft`).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Course' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /courses/{courseId}:
+    get:
+      tags: [Courses]
+      summary: Get a course
+      description: 404s (not 403) for a draft/archived course unless the caller owns it or is admin/course_manager - existence isn't disclosed to anyone else.
+      security: []
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Course' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Courses]
+      summary: Update a course (owner/admin/course_manager only)
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: Same shape as create, all fields optional. }
+      responses:
+        '200': { description: Updated. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Courses]
+      summary: Delete a course (owner/admin/course_manager only)
+      description: Cascades to sections, lessons, assessments, submissions, enrollments, progress, live sessions, attendance, SCORM data, discussion threads/comments and reviews, and removes the course from learning paths and other courses' prerequisites. Uploaded files are deleted best-effort. Previously-issued certificates are preserved with the course title stored on them. Refused with 409 when any student paid for the course - archive it instead.
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: Deleted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: The course has paying students. }
+
+  /courses/{courseId}/status:
+    patch:
+      tags: [Courses]
+      summary: Change a course's publication status
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { type: string, enum: [draft, published, archived] } }
+      responses:
+        '200': { description: Status changed. }
+
+  /courses/{courseId}/sections:
+    get:
+      tags: [Courses]
+      summary: List a course's sections (curriculum outline)
+      security: []
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Courses]
+      summary: Add a section
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, order]
+              properties: { title: { type: string, maxLength: 200 }, order: { type: integer, minimum: 0 } }
+      responses:
+        '201': { description: Created. }
+
+  /courses/{courseId}/sections/reorder:
+    patch:
+      tags: [Courses]
+      summary: Reorder sections
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order]
+              properties:
+                order:
+                  type: array
+                  items:
+                    type: object
+                    properties: { sectionId: { $ref: '#/components/schemas/ObjectId' }, order: { type: integer } }
+      responses:
+        '200': { description: Reordered. }
+
+  /courses/{courseId}/sections/{sectionId}:
+    delete:
+      tags: [Courses]
+      summary: Delete a section (and its lessons)
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - in: path
+          name: sectionId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200': { description: Deleted. }
+
+  /courses/{courseId}/lessons:
+    get:
+      tags: [Courses]
+      summary: List a course's lessons
+      description: |
+        Publicly accessible. Content fields (`videoUrl`, `fileUrl`,
+        `packageUrl`, `instructions`, etc.) are stripped and `locked: true`
+        is set for any lesson the caller isn't entitled to (not
+        enrolled, not staff, not the owning instructor) unless the
+        lesson has `isPreview: true`. Outline fields (title, order,
+        type, duration) are always visible.
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - in: query
+          name: section
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/Lesson' } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Courses]
+      summary: Add a lesson
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, section, order, lessonType]
+              properties:
+                title: { type: string, maxLength: 200 }
+                section: { $ref: '#/components/schemas/ObjectId' }
+                order: { type: integer, minimum: 0 }
+                lessonType: { type: string, enum: [video, pdf, assignment, download, scorm] }
+                isPreview: { type: boolean, default: false }
+              description: Additional required fields depend on `lessonType` - e.g. `videoUrl`+`durationSeconds` for `video`, `fileUrl` for `pdf`/`download`, `instructions`+`maxScore` for `assignment`, `packageUrl`+`entryPoint` for `scorm`. See Lesson.model.js discriminators.
+      responses:
+        '201': { description: Created. }
+
+  /courses/{courseId}/lessons/{lessonId}:
+    get:
+      tags: [Courses]
+      summary: Get a single lesson WITH its content
+      description: Requires entitlement (enrolled, staff, owning instructor, or the lesson is a preview) - 403 otherwise. This is what the lesson player calls; the list endpoint above never returns content fields.
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      responses:
+        '200': { description: OK, full lesson including content fields. }
+        '403': { description: Not entitled to this lesson's content. }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Courses]
+      summary: Update a lesson
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: Partial lesson fields; lessonType/course/section are immutable after creation. }
+      responses:
+        '200': { description: Updated. }
+    delete:
+      tags: [Courses]
+      summary: Delete a lesson
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      responses:
+        '200': { description: Deleted. }
+
+  /courses/{courseId}/offline-package:
+    get:
+      tags: [Courses]
+      summary: Download a ZIP of the course's content for offline use
+      description: Allowed for learners enrolled in a published course, the course's own instructor, assigned mentors, course managers and admins. Other instructors, unassigned mentors and unenrolled users receive 403. Streams a ZIP containing lesson media/files.
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200':
+          description: ZIP file stream.
+          content: { application/zip: { schema: { type: string, format: binary } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ============================== CATEGORIES ==============================
+  /course-categories:
+    get:
+      tags: [Categories]
+      summary: List all categories
+      security: []
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [Categories]
+      summary: Create a category (admin/course_manager)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string }, description: { type: string }, parentCategory: { $ref: '#/components/schemas/ObjectId' } }
+      responses:
+        '201': { description: Created. }
+
+  /course-categories/{categoryId}:
+    patch:
+      tags: [Categories]
+      summary: Rename or move a category (admin/course_manager)
+      description: Any of `name`, `description`, `parentCategory` (null to make top level). A parent that would create a loop is refused with 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 2, maxLength: 60 }
+                description: { type: string, maxLength: 300, nullable: true }
+                parentCategory: { type: string, nullable: true }
+      responses:
+        '200': { description: Updated. }
+        '400': { description: Invalid parent. }
+        '404': { description: Category not found. }
+    delete:
+      tags: [Categories]
+      summary: Delete a category (admin/course_manager). Refused with 409 while it still has courses or sub-categories.
+      parameters:
+        - in: path
+          name: categoryId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================== LEARNING PATHS ==============================
+  /learning-paths:
+    get:
+      tags: [Learning Paths]
+      summary: List learning paths
+      description: Anonymous/student callers are pinned to `isPublished=true` regardless of the query param; course_manager/admin may request drafts explicitly.
+      security: []
+      parameters:
+        - in: query
+          name: level
+          schema: { type: string, enum: [beginner, intermediate, advanced] }
+        - in: query
+          name: isPublished
+          schema: { type: boolean }
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [Learning Paths]
+      summary: Create a learning path (course_manager/admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, level]
+              properties:
+                title: { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 3000 }
+                level: { type: string, enum: [beginner, intermediate, advanced] }
+      responses:
+        '201': { description: Created (unpublished by default). }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /learning-paths/mine:
+    get:
+      tags: [Learning Paths]
+      summary: List learning paths the current student is enrolled in
+      responses:
+        '200': { description: OK }
+
+  /learning-paths/{pathId}:
+    get:
+      tags: [Learning Paths]
+      summary: Get a learning path
+      description: 404s (not 403) for an unpublished path unless the caller is course_manager/admin.
+      security: []
+      parameters: [{ $ref: '#/components/parameters/pathId' }]
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Learning Paths]
+      summary: Update a learning path, including publishing it (`isPublished`)
+      parameters: [{ $ref: '#/components/parameters/pathId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                level: { type: string, enum: [beginner, intermediate, advanced] }
+                isPublished: { type: boolean }
+      responses:
+        '200': { description: Updated. }
+
+  /learning-paths/{pathId}/courses:
+    put:
+      tags: [Learning Paths]
+      summary: Set the ordered list of courses in a path
+      parameters: [{ $ref: '#/components/parameters/pathId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courses]
+              properties:
+                courses:
+                  type: array
+                  items:
+                    type: object
+                    required: [course, order]
+                    properties: { course: { $ref: '#/components/schemas/ObjectId' }, order: { type: integer } }
+      responses:
+        '200': { description: Updated. }
+
+  /learning-paths/{pathId}/my-progress:
+    get:
+      tags: [Learning Paths]
+      summary: Get the current student's progress through a path
+      parameters: [{ $ref: '#/components/parameters/pathId' }]
+      responses:
+        '200': { description: OK }
+
+  # ============================== ENROLLMENTS ==============================
+  /enrollments/me:
+    get:
+      tags: [Enrollments]
+      summary: List the current student's enrollments
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/Enrollment' } } }
+
+  /config:
+    get:
+      tags: [Config]
+      summary: Public feature flags for the client
+      description: '`paymentsEnabled` is true by default, with or without a payment gateway, so the client shows prices, coupons and subscriptions. It is false only when the server is started with PAYMENTS_ENABLED=false.'
+      security: []
+      responses:
+        '200': { description: OK }
+
+  /enrollments:
+    post:
+      tags: [Enrollments]
+      summary: Enroll in a course
+      description: Free and paid courses. Enrolling in a course with a price records the price (after any coupon or covering subscription) and activates the enrollment immediately; no payment gateway is involved. Answers 402 only when the server runs with PAYMENTS_ENABLED=false. Learning-path enrollment follows the same rule for the path's first course.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courseId]
+              properties: { courseId: { $ref: '#/components/schemas/ObjectId' }, couponCode: { type: string } }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Enrollment' } }
+        '400': { description: Course not published, prerequisite not met, or already enrolled. }
+
+  /enrollments/learning-paths/{pathId}:
+    post:
+      tags: [Enrollments]
+      summary: Enroll in a learning path (enrolls in its first course)
+      parameters: [{ $ref: '#/components/parameters/pathId' }]
+      responses:
+        '201': { description: Enrolled in the path's first course. }
+
+  /enrollments/{courseId}/drop:
+    patch:
+      tags: [Enrollments]
+      summary: Drop an enrollment
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: Dropped. }
+
+  /enrollments/courses/{courseId}:
+    get:
+      tags: [Enrollments]
+      summary: List the students enrolled in a course
+      description: Only the course's own instructor, mentors assigned to the course, course managers and admins. Other instructors and unassigned mentors receive 403.
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ============================== PROGRESS ==============================
+  /progress/courses/{courseId}:
+    get:
+      tags: [Progress]
+      summary: Get the current student's progress in a course
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: OK }
+
+  /progress/courses/{courseId}/lessons/{lessonId}/complete:
+    post:
+      tags: [Progress]
+      summary: Mark a lesson complete
+      description: |
+        Rules: a video lesson needs at least 85% credited watch time (recorded by `video-position`), otherwise 400; a SCORM lesson can only be completed inside its player; a lesson linked to a published assessment stays locked until that assessment is passed. Other lesson types can be marked complete directly.
+
+        The course `percent` counts lessons plus published assessments (a passed assessment counts as done). At 100% the enrollment flips to `completed`, a certificate is issued (if a default template is configured), and learning-path advancement is checked.
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      responses:
+        '200':
+          description: Updated. Response includes the course's new overall `percent`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: object, properties: { percent: { type: integer, minimum: 0, maximum: 100 } } } }
+
+  /progress/courses/{courseId}/lessons/{lessonId}/incomplete:
+    post:
+      tags: [Progress]
+      summary: Mark a lesson incomplete (undo completion)
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      responses:
+        '200': { description: Updated. }
+
+  /progress/courses/{courseId}/lessons/{lessonId}/video-position:
+    post:
+      tags: [Progress]
+      summary: Report video playback position (throttled by the client)
+      description: |
+        Only `positionSeconds` is used; any duration sent by the client is ignored and the lesson's stored duration applies. Credit for a report is limited to the forward movement since the previous report, capped at roughly 2.25x the real time elapsed, so skipping ahead earns nothing. Reaching 85% credited watch time completes the lesson.
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [positionSeconds]
+              properties: { positionSeconds: { type: number, minimum: 0 } }
+      responses:
+        '200': { description: Recorded. }
+
+  /progress/lessons/{lessonId}/video-position:
+    get:
+      tags: [Progress]
+      summary: Get the current student's saved position for a video lesson (resume playback)
+      parameters: [{ $ref: '#/components/parameters/lessonId' }]
+      responses:
+        '200': { description: OK }
+
+  # ============================== ASSESSMENTS ==============================
+  /assessments:
+    post:
+      tags: [Assessments]
+      summary: Create an assessment (owning instructor/course_manager/admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [course, title, assessmentType, evaluationType]
+              properties:
+                course: { $ref: '#/components/schemas/ObjectId' }
+                title: { type: string, maxLength: 200 }
+                assessmentType: { type: string, enum: [quiz, coding, project] }
+                evaluationType: { type: string, enum: [auto, manual, hybrid] }
+                isPublished: { type: boolean, default: false }
+                timeLimitMinutes: { type: integer }
+                maxAttempts: { type: integer }
+                shuffleQuestions: { type: boolean }
+              description: Further required fields depend on `assessmentType` - `questions[]` for quiz, `instructions`+`maxScore` for coding/project. See Assessment.model.js discriminators.
+      responses:
+        '201': { description: Created. }
+        '403': { description: Caller does not own the target course (and is not course_manager/admin). }
+
+  /assessments/{assessmentId}:
+    get:
+      tags: [Assessments]
+      summary: Get an assessment
+      description: For a non-staff caller, correct answers are stripped and the caller must be enrolled in the assessment's course (403 otherwise).
+      parameters: [{ $ref: '#/components/parameters/assessmentId' }]
+      responses:
+        '200': { description: OK }
+        '403': { description: Not enrolled in this assessment's course. }
+    patch:
+      tags: [Assessments]
+      summary: Update an assessment (owning instructor/course_manager/admin only)
+      parameters: [{ $ref: '#/components/parameters/assessmentId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: Partial assessment fields. }
+      responses:
+        '200': { description: Updated. }
+        '403': { description: Caller does not own this assessment's course. }
+    delete:
+      tags: [Assessments]
+      summary: Delete an assessment (and its submissions) - owning instructor/course_manager/admin only
+      parameters: [{ $ref: '#/components/parameters/assessmentId' }]
+      responses:
+        '200': { description: Deleted. }
+        '403': { description: Caller does not own this assessment's course. }
+
+  /assessments/course/{courseId}:
+    get:
+      tags: [Assessments]
+      summary: List assessments for a course
+      description: Caller must be enrolled (or staff/the owning instructor) - 403 otherwise.
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses:
+        '200': { description: OK }
+        '403': { description: Not enrolled in this course. }
+
+  /assessments/{assessmentId}/attempts:
+    post:
+      tags: [Assessments]
+      summary: Start an attempt
+      description: Requires enrollment in the assessment's course.
+      parameters: [{ $ref: '#/components/parameters/assessmentId' }]
+      responses:
+        '201':
+          description: Attempt started.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          submission: { $ref: '#/components/schemas/Submission' }
+                          assessment: { type: object }
+        '403': { description: Not enrolled in this course. }
+
+  /assessments/{assessmentId}/attempts/me:
+    get:
+      tags: [Assessments]
+      summary: List the current student's own submissions/attempts for an assessment
+      parameters: [{ $ref: '#/components/parameters/assessmentId' }]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/Submission' } } }
+
+  /assessments/attempts/{submissionId}/submit:
+    post:
+      tags: [Assessments]
+      summary: Submit an attempt
+      parameters: [{ $ref: '#/components/parameters/submissionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Shape depends on assessmentType.
+              properties:
+                quizAnswers:
+                  type: array
+                  items:
+                    type: object
+                    properties: { questionId: { $ref: '#/components/schemas/ObjectId' }, selectedOptionIndexes: { type: array, items: { type: integer } } }
+                code: { type: string }
+                language: { type: string }
+                fileUrl: { type: string, format: uri }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Submission' } }
+
+  /assessments/{assessmentId}/submissions:
+    get:
+      tags: [Assessments]
+      summary: List submissions awaiting/all grading for an assessment
+      description: Owning instructor/course_manager/admin/mentor only.
+      parameters:
+        - { $ref: '#/components/parameters/assessmentId' }
+        - in: query
+          name: pendingOnly
+          schema: { type: boolean, default: true }
+      responses:
+        '200': { description: OK }
+        '403': { description: Caller does not own this assessment's course. }
+
+  /assessments/submissions/{submissionId}/grade:
+    patch:
+      tags: [Assessments]
+      summary: Grade a submission
+      description: Owning instructor/course_manager/admin/mentor only. A score above the assessment's own `maxScore` is rejected.
+      parameters: [{ $ref: '#/components/parameters/submissionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [score]
+              properties: { score: { type: number, minimum: 0 }, feedback: { type: string } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Submission' } }
+        '400': { description: Score exceeds the assessment's maxScore. }
+        '403': { description: Caller does not own this assessment's course. }
+
+  # ============================== CERTIFICATES ==============================
+  /certificates/verify/{code}:
+    get:
+      tags: [Certificates]
+      summary: Publicly verify a certificate by its verification code
+      security: []
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Always 200 - validity is in the response body, not the status code.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          valid: { type: boolean }
+                          reason: { type: string, description: Present only when valid is false. }
+                          certificateNumber: { type: string }
+                          studentName: { type: string }
+                          courseTitle: { type: string }
+                          issuedAt: { type: string, format: date-time }
+
+  /certificates/me:
+    get:
+      tags: [Certificates]
+      summary: List the current student's certificates
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/Certificate' } } }
+
+  /certificates/{certificateId}:
+    get:
+      tags: [Certificates]
+      summary: Get a certificate (owner or admin)
+      parameters: [{ $ref: '#/components/parameters/certificateId' }]
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /certificates/{certificateId}/download:
+    get:
+      tags: [Certificates]
+      summary: Download the certificate as a PDF
+      parameters: [{ $ref: '#/components/parameters/certificateId' }]
+      responses:
+        '200':
+          description: PDF stream.
+          content: { application/pdf: { schema: { type: string, format: binary } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /certificates/{certificateId}/revoke:
+    patch:
+      tags: [Certificates]
+      summary: Revoke a certificate (admin only)
+      parameters: [{ $ref: '#/components/parameters/certificateId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { reason: { type: string } } }
+      responses:
+        '200': { description: Revoked. }
+
+  # ============================== CERTIFICATE TEMPLATES ==============================
+  /certificate-templates:
+    get:
+      tags: [Certificate Templates]
+      summary: List certificate templates (admin only)
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [Certificate Templates]
+      summary: Create a certificate template (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 200 }
+                isDefault: { type: boolean }
+                primaryColor: { type: string, pattern: '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$' }
+                signatureName: { type: string }
+                signatureTitle: { type: string }
+                logoUrl: { type: string, format: uri }
+                footerText: { type: string, maxLength: 500 }
+      responses:
+        '201': { description: Created. Setting isDefault unsets any previous default. }
+
+  /certificate-templates/{templateId}:
+    patch:
+      tags: [Certificate Templates]
+      summary: Update a certificate template (admin only)
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, description: Same shape as create, all fields optional. }
+      responses:
+        '200': { description: Updated. }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Certificate Templates]
+      summary: Delete a certificate template (admin only)
+      parameters:
+        - in: path
+          name: templateId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ============================== DISCUSSIONS ==============================
+  /discussions/courses/{courseId}/threads:
+    get:
+      tags: [Discussions]
+      summary: List a course's discussion threads
+      description: Requires enrollment (or staff/the owning instructor) - 403 otherwise.
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - in: query
+          name: lesson
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - in: query
+          name: announcementsOnly
+          schema: { type: boolean }
+      responses:
+        '200': { description: OK }
+        '403': { description: Not enrolled in this course. }
+    post:
+      tags: [Discussions]
+      summary: Post a new thread
+      description: 'Requires enrollment. `isAnnouncement: true` additionally requires being an instructor/course_manager/admin.'
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title: { type: string, maxLength: 200 }
+                body: { type: string, maxLength: 5000 }
+                lesson: { $ref: '#/components/schemas/ObjectId' }
+                isAnnouncement: { type: boolean }
+      responses:
+        '201': { description: Created. }
+        '403': { description: Not enrolled, or posting an announcement without instructor privileges. }
+
+  /discussions/threads/{threadId}:
+    get:
+      tags: [Discussions]
+      summary: Get a thread
+      description: Requires enrollment in the thread's course.
+      parameters: [{ $ref: '#/components/parameters/threadId' }]
+      responses:
+        '200': { description: OK }
+        '403': { description: Not enrolled in this thread's course. }
+    patch:
+      tags: [Discussions]
+      summary: Pin or lock a thread (instructor/course_manager/admin)
+      parameters: [{ $ref: '#/components/parameters/threadId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties: { isPinned: { type: boolean }, isLocked: { type: boolean } }
+      responses:
+        '200': { description: Updated. }
+    delete:
+      tags: [Discussions]
+      summary: Delete a thread (its author, or instructor/course_manager/admin)
+      parameters: [{ $ref: '#/components/parameters/threadId' }]
+      responses:
+        '200': { description: Deleted. }
+
+  /discussions/threads/{threadId}/comments:
+    get:
+      tags: [Discussions]
+      summary: List a thread's comments
+      description: Requires enrollment in the thread's course.
+      parameters: [{ $ref: '#/components/parameters/threadId' }]
+      responses:
+        '200': { description: OK }
+        '403': { description: Not enrolled in this thread's course. }
+    post:
+      tags: [Discussions]
+      summary: Reply to a thread
+      description: Requires enrollment; fails if the thread is locked. Replies from instructors/course_managers/admins are flagged `isInstructorReply`.
+      parameters: [{ $ref: '#/components/parameters/threadId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties: { body: { type: string, maxLength: 3000 }, parentComment: { $ref: '#/components/schemas/ObjectId' } }
+      responses:
+        '201': { description: Created. }
+        '400': { description: Thread is locked. }
+        '403': { description: Not enrolled in this thread's course. }
+
+  /discussions/comments/{commentId}:
+    delete:
+      tags: [Discussions]
+      summary: Delete a comment (its author, or instructor/course_manager/admin)
+      parameters:
+        - in: path
+          name: commentId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200': { description: Deleted. }
+
+  # ============================== NOTIFICATIONS ==============================
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List the current user's notifications
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: array, items: { $ref: '#/components/schemas/Notification' } } }
+
+  /notifications/{notificationId}/read:
+    patch:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      parameters:
+        - in: path
+          name: notificationId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200': { description: Updated. }
+
+  /notifications/read-all:
+    patch:
+      tags: [Notifications]
+      summary: Mark all of the current user's notifications as read
+      responses:
+        '200': { description: Updated. }
+
+  # ============================== ANALYTICS ==============================
+  /analytics/student:
+    get:
+      tags: [Analytics]
+      summary: Current student's dashboard (active/completed courses, deadlines, certificates, assignment status)
+      responses: { '200': { description: OK } }
+
+  /analytics/student/statistics:
+    get:
+      tags: [Analytics]
+      summary: Current student's learning statistics (time spent, quiz average, activity streak)
+      responses: { '200': { description: OK } }
+
+  /analytics/mentor:
+    get:
+      tags: [Analytics]
+      summary: Mentor workspace summary (mentors only)
+      description: Courses the mentor is assigned to, with student counts, submissions waiting to be graded and upcoming live classes.
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /analytics/instructor:
+    get:
+      tags: [Analytics]
+      summary: Current instructor's dashboard (enrollments, completion rates, avg progress per course)
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /analytics/instructor/feedback-reports:
+    get:
+      tags: [Analytics]
+      summary: Aggregated student feedback/ratings for the current instructor's courses
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /analytics/instructor/earnings:
+    get:
+      tags: [Analytics]
+      summary: Current instructor's commission-based earnings breakdown
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /analytics/admin:
+    get:
+      tags: [Analytics]
+      summary: Platform-wide analytics (admin only) - student growth, course/instructor performance, revenue, completion rate, engagement
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  # ============================== REPORTS ==============================
+  /reports/{type}:
+    get:
+      tags: [Reports]
+      summary: Export a report (admin/course_manager only)
+      description: |
+        `dateFrom`/`dateTo` apply to all six report types. `courseId`
+        applies to courses/assessments/progress/certificates.
+        `instructorId` and `categoryId` apply to courses. `studentId`
+        applies to progress. Unrecognized filters for a given type are
+        silently ignored rather than erroring.
+      parameters:
+        - in: path
+          name: type
+          required: true
+          schema: { type: string, enum: [students, courses, instructors, assessments, progress, certificates] }
+        - in: query
+          name: format
+          schema: { type: string, enum: [csv, excel, pdf], default: csv }
+        - in: query
+          name: dateFrom
+          schema: { type: string, format: date }
+        - in: query
+          name: dateTo
+          schema: { type: string, format: date }
+        - in: query
+          name: courseId
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - in: query
+          name: instructorId
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - in: query
+          name: categoryId
+          schema: { $ref: '#/components/schemas/ObjectId' }
+        - in: query
+          name: studentId
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200':
+          description: File stream in the requested format.
+          content:
+            text/csv: { schema: { type: string } }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        '400': { description: Unknown report type, bad format, or invalid date. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ============================== COUPONS ==============================
+  /coupons:
+    get:
+      tags: [Coupons]
+      summary: List coupons (admin/course_manager)
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+    post:
+      tags: [Coupons]
+      summary: Create a coupon (admin/course_manager)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, discountType, discountValue]
+              properties:
+                code: { type: string, minLength: 3, maxLength: 40 }
+                discountType: { type: string, enum: [percentage, fixed] }
+                discountValue: { type: number, minimum: 0, description: 'Capped at 100 when discountType is percentage.' }
+                applicableCourses: { type: array, items: { $ref: '#/components/schemas/ObjectId' } }
+                maxRedemptions: { type: integer, minimum: 1, nullable: true }
+                expiresAt: { type: string, format: date-time, nullable: true }
+                isActive: { type: boolean, default: true }
+      responses:
+        '201': { description: Created. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /coupons/{couponId}:
+    delete:
+      tags: [Coupons]
+      summary: Delete a coupon (admin/course_manager)
+      parameters:
+        - in: path
+          name: couponId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200': { description: Deleted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /coupons/validate:
+    post:
+      tags: [Coupons]
+      summary: Preview a coupon's effect on a course's price (does not redeem it)
+      description: Currently answers 402 while paid courses are switched off.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, courseId]
+              properties: { code: { type: string }, courseId: { $ref: '#/components/schemas/ObjectId' } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { type: object, properties: { originalPrice: { type: number }, finalPrice: { type: number } } } }
+        '400': { description: Invalid, expired, or inapplicable coupon code. }
+
+  # ============================== SUBSCRIPTIONS ==============================
+  /subscriptions/plans:
+    get:
+      tags: [Subscriptions]
+      summary: List subscription plans (public catalog)
+      security: []
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Subscriptions]
+      summary: Create a subscription plan (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price, durationDays]
+              properties:
+                name: { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 2000 }
+                price: { type: number, minimum: 0 }
+                durationDays: { type: integer, minimum: 1 }
+                coursesIncluded:
+                  oneOf:
+                    - { type: string, enum: [all] }
+                    - { type: array, items: { $ref: '#/components/schemas/ObjectId' } }
+                isActive: { type: boolean, default: true }
+      responses: { '201': { description: Created. }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /subscriptions/plans/{planId}:
+    patch:
+      tags: [Subscriptions]
+      summary: Update a subscription plan (admin only)
+      parameters:
+        - in: path
+          name: planId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, description: Same shape as create, all fields optional. }
+      responses: { '200': { description: Updated. }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /subscriptions/me:
+    get:
+      tags: [Subscriptions]
+      summary: Get the current user's active subscription, if any
+      responses: { '200': { description: OK } }
+
+  /subscriptions/subscribe:
+    post:
+      tags: [Subscriptions]
+      summary: Subscribe to a plan
+      description: Activates the plan immediately; no payment gateway is involved. Answers 402 only when the server runs with PAYMENTS_ENABLED=false.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId]
+              properties: { planId: { $ref: '#/components/schemas/ObjectId' } }
+      responses: { '201': { description: Subscribed. } }
+
+  /subscriptions/{subscriptionId}/cancel:
+    patch:
+      tags: [Subscriptions]
+      summary: Cancel a subscription
+      parameters:
+        - in: path
+          name: subscriptionId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses: { '200': { description: Cancelled. } }
+
+  # ============================== LIVE CLASSES ==============================
+  /live-classes/courses/{courseId}:
+    get:
+      tags: [Live Classes]
+      summary: List scheduled live class sessions for a course
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Live Classes]
+      summary: Schedule a live class session (instructor/course_manager/admin)
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, scheduledAt]
+              properties:
+                title: { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 2000 }
+                scheduledAt: { type: string, format: date-time }
+      responses: { '201': { description: Scheduled. }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /live-classes/{sessionId}:
+    get:
+      tags: [Live Classes]
+      summary: Get a session (must be able to join - enrolled or staff)
+      parameters: [{ $ref: '#/components/parameters/sessionId' }]
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  /live-classes/{sessionId}/start:
+    post:
+      tags: [Live Classes]
+      summary: Start a session (instructor/course_manager/admin)
+      parameters: [{ $ref: '#/components/parameters/sessionId' }]
+      responses: { '200': { description: Started. } }
+
+  /live-classes/{sessionId}/end:
+    post:
+      tags: [Live Classes]
+      summary: End a session (instructor/course_manager/admin)
+      parameters: [{ $ref: '#/components/parameters/sessionId' }]
+      responses: { '200': { description: Ended. } }
+
+  # ============================== SCORM ==============================
+  /scorm/courses/{courseId}/lessons/{lessonId}/launch:
+    get:
+      tags: [SCORM]
+      summary: Start a SCORM lesson
+      description: |
+        Checks that the caller may view the lesson (enrolled, owner, staff or a
+        preview lesson) and returns a short-lived `playerUrl` on the dedicated
+        SCORM content origin, plus the learner's saved progress. Returns 503 if
+        `SCORM_CONTENT_ORIGIN` is not configured.
+      parameters:
+        - in: path
+          name: courseId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: lessonId
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Launch details. }
+        '400': { description: Not a SCORM lesson, or the package has an unusable entry point. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: SCORM playback is not configured. }
+
+  /scorm/player/{token}:
+    get:
+      tags: [SCORM]
+      summary: SCORM player page (content origin only)
+      description: |
+        Served only on the host named in `SCORM_CONTENT_ORIGIN`; any other host
+        receives 404. Returns a small HTML page that implements the SCORM 1.2
+        `API` object locally, loads the package in an inner frame and relays
+        progress to the app with `postMessage`. Can only be framed by the
+        configured client origin.
+      security: []
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: HTML player page. }
+        '404': { description: Wrong host. }
+        '410': { description: The launch token has expired. }
+
+  /scorm/packages/{token}/{filePath}:
+    get:
+      tags: [SCORM]
+      summary: Serve a file from an uploaded SCORM package (content origin only)
+      description: |
+        Served only on the host named in `SCORM_CONTENT_ORIGIN`, never on the
+        application host, so package scripts cannot act as the signed-in user.
+        Unauthenticated by design (the content origin has no session); access is
+        granted by a short-lived, HMAC-signed launch `token` from the launch
+        endpoint. Responses carry a Content-Security-Policy that limits framing
+        to the client origin.
+      security: []
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string }
+        - in: path
+          name: filePath
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: File content, with the correct Content-Type for the file extension. }
+        '400': { description: Invalid or tampered token. }
+        '404': { description: Wrong host or file not found. }
+        '410': { description: The launch token has expired. }
+
+  /scorm/courses/{courseId}/lessons/{lessonId}/data:
+    get:
+      tags: [SCORM]
+      summary: Get the current student's SCORM runtime data (cmi.core.lesson_status, suspend_data, etc.)
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      responses: { '200': { description: OK } }
+    patch:
+      tags: [SCORM]
+      summary: Commit SCORM runtime data (called by the SCORM RTE's LMSCommit)
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - { $ref: '#/components/parameters/lessonId' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                lessonStatus: { type: string, enum: [passed, completed, failed, incomplete, browsed, 'not attempted'] }
+                scoreRaw: { type: number, minimum: 0, maximum: 100 }
+                lessonLocation: { type: string, maxLength: 1000 }
+                suspendData: { type: string, maxLength: 8192 }
+                sessionTime: { type: string, maxLength: 20 }
+      responses: { '200': { description: Committed; a passed/completed status propagates to course progress. } }
+
+  /scorm/packages:
+    post:
+      tags: [SCORM]
+      summary: Upload a SCORM 1.2 package (instructor/course_manager/admin)
+      description: Multipart form upload; the zip is parsed for its manifest, the referenced files are staged, and a signed package token is returned for use as a lesson's `packageUrl`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties: { file: { type: string, format: binary } }
+      responses:
+        '201': { description: Uploaded and parsed. }
+        '400': { description: Not a valid SCORM 1.2 package. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ============================== UPLOADS ==============================
+  /uploads/video:
+    post:
+      tags: [Uploads]
+      summary: Upload a video (instructor/course_manager/admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/UploadResult' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /uploads/pdf:
+    post:
+      tags: [Uploads]
+      summary: Upload a PDF (instructor/course_manager/admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        '201': { description: Uploaded. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /uploads/image:
+    post:
+      tags: [Uploads]
+      summary: Upload an image (instructor/course_manager/admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        '201': { description: Uploaded. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /uploads/download:
+    post:
+      tags: [Uploads]
+      summary: Upload a downloadable resource file (instructor/course_manager/admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        '201': { description: Uploaded. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ============================== ATTENDANCE ==============================
+  /attendance/me:
+    get:
+      tags: [Attendance]
+      summary: List the current user's own attendance records (live classes)
+      responses: { '200': { description: OK } }
+
+  /attendance/live-classes/{sessionId}:
+    get:
+      tags: [Attendance]
+      summary: List attendance for a live class session (instructor/course_manager/admin/mentor)
+      parameters: [{ $ref: '#/components/parameters/sessionId' }]
+      responses: { '200': { description: OK }, '403': { $ref: '#/components/responses/Forbidden' } }
+
+  # ============================== REVIEWS ==============================
+  /reviews/courses/{courseId}/reviews:
+    get:
+      tags: [Reviews]
+      summary: List a course's reviews
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/courseId' }
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/limit'
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Reviews]
+      summary: Submit a review for a course
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties: { rating: { type: integer, minimum: 1, maximum: 5 }, comment: { type: string, maxLength: 2000 } }
+      responses: { '201': { description: Submitted. } }
+
+  /reviews/courses/{courseId}/rating-summary:
+    get:
+      tags: [Reviews]
+      summary: Get a course's average rating and star distribution
+      security: []
+      parameters: [{ $ref: '#/components/parameters/courseId' }]
+      responses: { '200': { description: OK } }
+
+  /reviews/{reviewId}:
+    patch:
+      tags: [Reviews]
+      summary: Update your own review
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties: { rating: { type: integer, minimum: 1, maximum: 5 }, comment: { type: string, maxLength: 2000 } }
+      responses: { '200': { description: Updated. } }
+    delete:
+      tags: [Reviews]
+      summary: Delete a review (its author, or admin)
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses: { '200': { description: Deleted. } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 'Obtained from `POST /auth/login` or `/auth/refresh`. Send as `Authorization: Bearer <token>`.'
+
+  parameters:
+    courseId: { name: courseId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    lessonId: { name: lessonId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    pathId: { name: pathId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    assessmentId: { name: assessmentId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    submissionId: { name: submissionId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    certificateId: { name: certificateId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    threadId: { name: threadId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    sessionId: { name: sessionId, in: path, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }
+    page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or expired access token.
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    Forbidden:
+      description: Authenticated, but not permitted to perform this action.
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    NotFound:
+      description: Resource not found (also returned instead of 403 where existence itself shouldn't be disclosed - see individual endpoint notes).
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    Conflict:
+      description: The request conflicts with existing state (e.g. an account with this email already exists).
+      content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+    ValidationError:
+      description: Request body failed schema validation.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiError'
+              - type: object
+                properties: { details: { type: array, items: { type: string } } }
+
+  schemas:
+    ObjectId:
+      type: string
+      pattern: '^[0-9a-fA-F]{24}$'
+      example: 64f1a2b3c4d5e6f7a8b9c0d1
+
+    Role:
+      type: string
+      enum: [student, instructor, mentor, course_manager, admin]
+
+    ApiSuccess:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        message: { type: string, nullable: true }
+        data: {}
+        pagination:
+          type: object
+          nullable: true
+          properties:
+            page: { type: integer }
+            limit: { type: integer }
+            total: { type: integer }
+            pages: { type: integer }
+
+    ApiError:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string }
+        details:
+          type: array
+          items: { type: string }
+          description: Present on validation errors (400) - one entry per failing field.
+
+    User:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        permissions: { type: array, items: { type: string } }
+        isActive: { type: boolean }
+        isEmailVerified: { type: boolean }
+        mfaEnabled: { type: boolean }
+        avatar: { type: object, properties: { url: { type: string, format: uri } } }
+        phone: { type: string }
+        bio: { type: string }
+        skills: { type: array, items: { type: string } }
+        education: { type: array, items: { type: object } }
+        socialLinks: { type: object, properties: { github: { type: string }, linkedin: { type: string } } }
+        createdAt: { type: string, format: date-time }
+
+    Course:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        title: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        instructor: { $ref: '#/components/schemas/ObjectId' }
+        category: { $ref: '#/components/schemas/ObjectId' }
+        status: { type: string, enum: [draft, published, archived] }
+        price: { type: number }
+        tags: { type: array, items: { type: string } }
+        prerequisites: { type: array, items: { $ref: '#/components/schemas/ObjectId' } }
+        contentVersion: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    Lesson:
+      type: object
+      description: Base shape; type-specific fields (videoUrl, fileUrl, instructions, packageUrl, ...) vary by `lessonType` and are present only when the caller is entitled to this lesson's content.
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        course: { $ref: '#/components/schemas/ObjectId' }
+        section: { $ref: '#/components/schemas/ObjectId' }
+        title: { type: string }
+        order: { type: integer }
+        lessonType: { type: string, enum: [video, pdf, assignment, download, scorm] }
+        isPreview: { type: boolean }
+        locked:
+          type: boolean
+          description: Set by the API (not stored) - true when content fields were stripped because the caller isn't entitled to them.
+
+    Enrollment:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        student: { $ref: '#/components/schemas/ObjectId' }
+        course: { $ref: '#/components/schemas/ObjectId' }
+        status: { type: string, enum: [active, completed, dropped] }
+        progressPercent: { type: integer, minimum: 0, maximum: 100 }
+        pricePaid: { type: number }
+        enrolledAt: { type: string, format: date-time }
+
+    Submission:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        assessment: { $ref: '#/components/schemas/ObjectId' }
+        student: { $ref: '#/components/schemas/ObjectId' }
+        attemptNumber: { type: integer }
+        status: { type: string, enum: [in_progress, submitted, auto_graded, graded] }
+        score: { type: number, nullable: true }
+        maxScore: { type: number, nullable: true }
+        feedback: { type: string, nullable: true }
+        submittedAt: { type: string, format: date-time, nullable: true }
+
+    Certificate:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        student: { $ref: '#/components/schemas/ObjectId' }
+        course: { $ref: '#/components/schemas/ObjectId' }
+        certificateNumber: { type: string, example: EZI-2026-000042 }
+        verificationCode: { type: string }
+        isRevoked: { type: boolean }
+        issuedAt: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        user: { $ref: '#/components/schemas/ObjectId' }
+        type:
+          type: string
+          enum: [enrollment, assignment_deadline, quiz_alert, announcement, certificate_issued, course_update]
+        title: { type: string }
+        message: { type: string }
+        isRead: { type: boolean }
+        relatedEntityType: { type: string, nullable: true }
+        relatedEntityId: { $ref: '#/components/schemas/ObjectId' }
+        createdAt: { type: string, format: date-time }
+
+    UploadResult:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        publicId: { type: string }
+        format: { type: string }
+        bytes: { type: integer }
+        durationSeconds: { type: number, nullable: true, description: Present for video uploads. }
