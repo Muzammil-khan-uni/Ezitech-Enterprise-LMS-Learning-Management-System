@@ -4,11 +4,11 @@
 
 <br/>
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&amp;weight=600&amp;size=23&amp;duration=2800&amp;pause=900&amp;color=0EA5E9&amp;center=true&amp;vCenter=true&amp;width=700&amp;lines=Courses+%2B+Live+Classes+%2B+SCORM+%2B+Assessments;MFA+Auth+%2B+RBAC+%2B+Redis-Backed+Everything;Certificates+%2B+Subscriptions+%2B+Coupons+%2B+Reports;React+19+%2B+Node+20+%2B+MongoDB+%2B+Socket.IO" alt="Typing SVG" />
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&amp;weight=600&amp;size=23&amp;duration=2800&amp;pause=900&amp;color=0EA5E9&amp;center=true&amp;vCenter=true&amp;width=700&amp;lines=Courses+%2B+Live+Classes+%2B+SCORM+%2B+Assessments;MFA+Auth+%2B+RBAC+%2B+Redis-Backed+Everything;Certificates+%2B+Subscriptions+%2B+Coupons+%2B+Reports;React+19+%2B+Node+26+%2B+MongoDB+%2B+Socket.IO" alt="Typing SVG" />
 
 <br/><br/>
 
-[![Backend](https://img.shields.io/badge/Backend-Express_5_%2B_Node_20-000000?style=for-the-badge&logo=express&logoColor=white)](#)
+[![Backend](https://img.shields.io/badge/Backend-Express_5_%2B_Node_26-000000?style=for-the-badge&logo=express&logoColor=white)](#)
 [![Frontend](https://img.shields.io/badge/Frontend-React_19_%2B_TypeScript-61DAFB?style=for-the-badge&logo=react&logoColor=black)](#)
 [![Database](https://img.shields.io/badge/Database-MongoDB-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](#)
 [![Cache/Queue](https://img.shields.io/badge/Cache_%2F_Queue-Redis_%2B_BullMQ-DC382D?style=for-the-badge&logo=redis&logoColor=white)](#)
@@ -52,7 +52,7 @@
 
 ## ✨ Overview
 
-> **Ezitech Enterprise LMS** is a full learning-management platform — not a single-course demo, but the kind of system a training company, university, or corporate L&amp;D department would actually run: course authoring with sections and lessons, live classes, SCORM package playback, quizzes and assignments with grading, discussion boards, certificates, subscriptions, coupons, and multi-role dashboards — all sitting on a **Node 20 + Express 5 + MongoDB + Redis** backend with a **React 19 + TypeScript** frontend.
+> **Ezitech Enterprise LMS** is a full learning-management platform — not a single-course demo, but the kind of system a training company, university, or corporate L&amp;D department would actually run: course authoring with sections and lessons, live classes, SCORM package playback, quizzes and assignments with grading, discussion boards, certificates, subscriptions, coupons, and multi-role dashboards — all sitting on a **Node 26 + Express 5 + MongoDB + Redis** backend with a **React 19 + TypeScript** frontend.
 
 It's built with the boring, unglamorous parts of a real product taken seriously: Redis-backed rate limiting and caching that stays correct across multiple API instances, a Socket.IO Redis adapter so notifications reach every instance, BullMQ background jobs so a slow SMTP server never blocks a request, and a hand-authored OpenAPI 3.0 spec (~100 documented paths) instead of stale prose docs.
 
@@ -141,7 +141,7 @@ It's built with the boring, unglamorous parts of a real product taken seriously:
 
 ```
 ┌──────────────────────────┐        REST + WebSocket        ┌──────────────────────────┐
-│   React 19 + TypeScript    │ ◄─────────────────────────────► │   Express 5 (Node 20)      │
+│   React 19 + TypeScript    │ ◄─────────────────────────────► │   Express 5 (Node 26)      │
 │   Redux Toolkit + React     │    axios → /api/v1/*             │   19 domain modules          │
 │   Query + Framer Motion     │    socket.io-client → /            │                              │
 └──────────────────────────┘                                 └───────────┬──────────────────┘
@@ -174,7 +174,7 @@ Every request-handling controller is wrapped in `catchAsync` so a rejected promi
 
 | Category | Technology |
 |:--|:--|
-| Runtime &amp; Framework | **Node.js 20** + **Express 5** |
+| Runtime &amp; Framework | **Node.js 26** + **Express 5** |
 | Database | **MongoDB** via **Mongoose** |
 | Caching, Rate-Limiting &amp; Jobs | **Redis** (`ioredis`) + **BullMQ** + `rate-limit-redis` |
 | Real-time | **Socket.IO** + `@socket.io/redis-adapter` (multi-instance safe) |
@@ -440,7 +440,6 @@ Software Engineer · Full-Stack (MERN) · Flutter &amp; Android
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/muhammed-muzammil-khan-617155373/)
 [![GitHub](https://img.shields.io/badge/GitHub-Muzammil--khan--uni-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Muzammil-khan-uni)
 
-📍 Rawalpindi, Pakistan &nbsp;|&nbsp; 📞 +92 330 4580951
 
 </div>
 
@@ -448,7 +447,7 @@ Software Engineer · Full-Stack (MERN) · Flutter &amp; Android
 
 ## 📄 License
 
-No `LICENSE` file was found in this repository yet — add one to declare the terms under which others may use, modify, or distribute this code.
+This project is licensed under the **GNU General Public License v2.0**. See the [`LICENSE`](./LICENSE) file for full terms.
 
 ---
 
